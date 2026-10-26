@@ -24,6 +24,7 @@
 #include "CrossPointState.h"
 #include "FileBrowserActionActivity.h"
 #include "MappedInputManager.h"
+#include "activities/UiCjkFallback.h"
 #include "activities/boot_sleep/ImageFolderIndex.h"
 #include "activities/reader/EpubReaderActivity.h"
 #include "activities/settings/SettingsActivity.h"
@@ -364,6 +365,10 @@ const char* FileBrowserActivity::entryNameAt(size_t row) {
 
 void FileBrowserActivity::onEnter() {
   Activity::onEnter();
+
+  // File and folder names can be CJK; the UI fallback fonts may have been
+  // released by whatever screen ran before this one.
+  UiCjk::ensureFallbacks(renderer);
 
   fileNameBuffer = makeUniqueNoThrow<char[]>(NAME_BUFFER_SIZE);
   if (!fileNameBuffer) {
@@ -1054,6 +1059,8 @@ void FileBrowserActivity::activateSelected() {
 }
 
 void FileBrowserActivity::loop() {
+  if (UiCjk::ensureFallbacks(renderer)) requestUpdate();
+
   if (TouchHeaderBackButton::wasTapped(mappedInput, renderer)) {
     navigateBack();
     return;

@@ -15,6 +15,7 @@
 #include "CrossPointState.h"
 #include "FileBrowserActionActivity.h"
 #include "MappedInputManager.h"
+#include "activities/UiCjkFallback.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/CompactHeader.h"
 #include "components/TouchHeaderBackButton.h"
@@ -87,6 +88,9 @@ void SavedItemsHomeActivity::reloadSavedBooks() {
 
 void SavedItemsHomeActivity::onEnter() {
   Activity::onEnter();
+  // Book titles in this list follow the UI CJK fallback family; it may have
+  // been released by whatever screen ran before this one.
+  UiCjk::ensureFallbacks(renderer);
   reloadSavedBooks();
   selectedIndex = 0;
   topIndex = 0;
