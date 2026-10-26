@@ -17,6 +17,10 @@
 
 #include "FontCacheManager.h"
 #include "GlyphBitmap.h"
+// Debug-only CJK diagnostics (SD-card log + screenshots). The include path
+// reaches from this app-owned lib into src/ on purpose and compiles away
+// entirely unless CROSSINK_CJK_DIAG is set.
+#include "../../src/util/CjkDiag.h"
 
 namespace {
 
@@ -367,8 +371,11 @@ int GfxRenderer::resolveTextFontId(const int fontId, const char* text, const Epd
     // Latin/symbol strings the built-in UI fonts already cover are left
     // untouched, and a partial-coverage fallback (e.g. kana-only) is not worth
     // dragging the whole string into for glyphs it would also miss.
-    if (utf8IsCjkCodepoint(cp) && !primary.hasCodepoint(cp, style) && fallback.hasCodepoint(cp, style)) {
-      return fallbackFontId;
+    if (utf8IsCjkCodepoint(cp) && !primary.hasCodepoint(cp, style)) {
+      if (fallback.hasCodepoint(cp, style)) {
+        return fallbackFontId;
+      }
+      CjkDiag::noteUnroutable(fontId, fallbackFontId, cp);
     }
   }
   return fontId;
@@ -1169,7 +1176,17 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     } else {
       cp = font.applyLigatures(cp, textCursor, style);
     }
+    const uint32_t cpBeforeFontFallback = cp;
     cp = font.getFallbackCodepoint(cp, style);
+    if (syntheticGlyph::isReplacementFallback(cp)) {
+      // Distinguish "the font lacks this glyph" from "the text already carried
+      // U+FFFD before any font was consulted" — the two need different fixes.
+      if (cpBeforeFontFallback == cp) {
+        CjkDiag::noteInputReplacement(resolvedFontId);
+      } else {
+        CjkDiag::noteMissingGlyph(resolvedFontId, cpBeforeFontFallback);
+      }
+    }
     const bool hasRealGlyph = font.findGlyphData(cp, style).glyph != nullptr;
 
     // Differential rounding: snap (previous advance + current kern) as one unit so
@@ -2393,6 +2410,7 @@ void GfxRenderer::invertRect(const int x, const int y, const int width, const in
 }
 
 void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode, const bool turnOffScreen) const {
+  CjkDiag::onDisplayBuffer(frameBuffer, panelWidthBytes, panelHeight, fallbackFontMap_);
   display.displayBuffer(refreshMode, fadingFix || turnOffScreen);
 }
 
