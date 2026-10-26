@@ -36,6 +36,7 @@
 #include "RecentBookProgress.h"
 #include "RecentBooksStore.h"
 #include "SavedItemsHomeActivity.h"
+#include "activities/UiCjkFallback.h"
 #include "components/UITheme.h"
 #include "components/themes/dashboard/DashboardTheme.h"
 #include "components/themes/lyra/LyraCarouselTheme.h"
@@ -827,6 +828,10 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
 void HomeActivity::onEnter() {
   Activity::onEnter();
 
+  // Book titles on the home screen follow the UI CJK fallback family; a
+  // previous screen may have released those fonts for network work.
+  UiCjk::ensureFallbacks(renderer);
+
   hasOpdsServers = OPDS_STORE.hasServers();
   if (UITheme::hasCoverGridHome()) {
     coverGridUi = makeUniqueNoThrow<CoverGridHomeUi>(renderer);
@@ -1387,6 +1392,8 @@ void HomeActivity::preRenderCarouselFrames() {
 }
 
 void HomeActivity::loop() {
+  if (UiCjk::ensureFallbacks(renderer)) requestUpdate();
+
   if (quickActionsLongPowerHandled) {
     if (!mappedInput.isPressed(MappedInputManager::Button::Power)) {
       quickActionsLongPowerHandled = false;

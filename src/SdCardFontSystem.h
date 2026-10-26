@@ -4,6 +4,7 @@
 #include <SdCardFontRegistry.h>
 
 #include <atomic>
+#include <cstdint>
 
 #include "ReaderFontSizeStep.h"
 
@@ -13,6 +14,18 @@ struct DictionaryFontActivation {
   int fontId = 0;
   bool usingDictionaryFont = false;
 };
+
+// Codepoints a size file must mostly cover before it serves a UI fallback
+// slot. Sizes within one family can differ in coverage (converted packs
+// sometimes subset their small sizes); a slot wired to a sparse size routes
+// nothing and every CJK character renders as the replacement diamond.
+namespace SdFontCjkCoverage {
+constexpr uint32_t kSample[] = {
+    0x4E00, 0x4E09, 0x4E2D, 0x56FD, 0x4EBA, 0x5927, 0x5C0F, 0x7684, 0x662F, 0x4E0D,
+    0x4E86, 0x6211, 0x5728, 0x4ED6, 0x6709, 0x8FD9, 0x3042, 0x30A2, 0xAC00,
+};
+constexpr uint8_t kMinScore = 3;
+}  // namespace SdFontCjkCoverage
 
 /// Facade that owns the SD card font registry, manager, and resolver logic.
 /// Hides implementation details behind a single begin() + ensureLoaded() API.
@@ -48,6 +61,14 @@ class SdCardFontSystem {
 
   /// Release all SD-font RAM that network/TLS work does not need.
   void releaseForNetwork(GfxRenderer& renderer);
+
+  /// Re-register UI CJK fallback sizes from the saved UI family preference
+  /// (or reader family when unset), without loading the reader font. Call on screens that show
+  /// user metadata (e.g. the BookOrbit catalog) after releaseForNetwork():
+  /// unloadAll() cleared the fallback map, and the reader is not around to
+  /// re-register it. Idempotent; caches positive and negative outcomes until
+  /// the family preference or the font registry revision changes.
+  void ensureUiFallbacks(GfxRenderer& renderer);
 
   /// Ensure the font catalog is available for settings/web enumeration, including
   /// newly uploaded or deleted fonts visible in the web UI.
@@ -136,6 +157,20 @@ class SdCardFontSystem {
   // loaded are reused).
   void setupUiFallbacks(GfxRenderer& renderer);
   void setupUiFallbacksDirect(GfxRenderer& renderer, const char* familyName);
+
+  // Register a CJK fallback for each UI slot, preferring an exact size and
+  // otherwise loading that slot's nearest installed size. `seedFontId` is a
+  // known CJK-capable reader size used only when a slot's own load fails.
+  // Returns true if any fallback was registered.
+  bool registerUiFallbackSizes(GfxRenderer& renderer, const SdCardFontFamilyInfo& family, int seedFontId);
+
+  // Load sizes of `family` nearest-first until one covers everyday CJK (see
+  // SdFontCjkCoverage). Returns the font id, or 0 when no size qualifies.
+  int loadCjkCoveringExtraSize(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t targetPointSize);
+
+  std::string uiFallbacksFamily_;
+  bool uiFallbacksRegistered_ = false;
+  uint32_t uiFallbacksRegistryRevision_ = 0;
 
   SdCardFontRegistry registry_;
   SdCardFontManager manager_;

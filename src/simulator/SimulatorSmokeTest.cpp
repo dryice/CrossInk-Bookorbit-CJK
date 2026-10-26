@@ -562,6 +562,35 @@ class SimulatorSmokeTest {
     SETTINGS.fromJson(librarySaved.as<JsonVariantConst>());
     if (SETTINGS.recentBooksView != CrossPointSettings::RECENT_BOOKS_LIST)
       fail("Missing Recently Opened view did not default to List");
+
+    JsonDocument legacyUiFont;
+    legacyUiFont["sdFontFamilyName"] = "ReaderCJK";
+    SETTINGS.fromJson(legacyUiFont.as<JsonVariantConst>());
+    if (SETTINGS.sdUiFontFamilyName[0] != '\0' ||
+        std::strcmp(SETTINGS.getEffectiveUiFontFamilyName(), "ReaderCJK") != 0) {
+      fail("Missing UI font family did not inherit the reader SD family");
+    }
+
+    SETTINGS.sdUiFontFamilyName[0] = '\0';
+    JsonDocument inheritedUiFont;
+    SETTINGS.toJson(inheritedUiFont);
+    if (!inheritedUiFont["sdUiFontFamilyName"].isNull()) {
+      fail("Inherited UI font family should not add a JSON setting");
+    }
+
+    JsonDocument explicitUiFont;
+    explicitUiFont["sdFontFamilyName"] = "ReaderCJK";
+    explicitUiFont["sdUiFontFamilyName"] = "UiCJK";
+    SETTINGS.fromJson(explicitUiFont.as<JsonVariantConst>());
+    if (std::strcmp(SETTINGS.sdUiFontFamilyName, "UiCJK") != 0 ||
+        std::strcmp(SETTINGS.getEffectiveUiFontFamilyName(), "UiCJK") != 0) {
+      fail("Explicit UI font family did not round-trip independently");
+    }
+    JsonDocument explicitUiFontSaved;
+    SETTINGS.toJson(explicitUiFontSaved);
+    if (std::strcmp(explicitUiFontSaved["sdUiFontFamilyName"] | "", "UiCJK") != 0) {
+      fail("Explicit UI font family was not written to settings JSON");
+    }
     SETTINGS.fromJson(original.as<JsonVariantConst>());
   }
 

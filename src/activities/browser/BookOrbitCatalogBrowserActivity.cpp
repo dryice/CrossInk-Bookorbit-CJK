@@ -153,7 +153,10 @@ void BookOrbitCatalogBrowserActivity::onRowEvent(const fui::ActionEvent& event, 
 void BookOrbitCatalogBrowserActivity::onEnter() {
   Activity::onEnter();
 
-  sdFontSystem.releaseLoadedFont(renderer);
+  {
+    RenderLock lock(*this);
+    sdFontSystem.releaseLoadedFont(renderer);
+  }
 
   uiReady = false;
   visibleRows = 1;
@@ -214,11 +217,35 @@ void BookOrbitCatalogBrowserActivity::onWifiSelectionComplete(const bool connect
     onGoHome();
     return;
   }
-  sdFontSystem.releaseForNetwork(renderer);
+  {
+    RenderLock lock(*this);
+    sdFontSystem.ensureUiFallbacks(renderer);
+  }
   if (!loadRoot(/*allowNetwork=*/false)) {
     showLoadingBeforeFetch();
     loadRoot();
   }
+}
+
+void BookOrbitCatalogBrowserActivity::beginNetworkPhase(const bool renderProgress) {
+  RenderLock lock(*this);
+  if (networkPhaseDepth++ != 0) return;
+  networkProgressPhase.store(renderProgress, std::memory_order_release);
+  networkPhase.store(true, std::memory_order_release);
+  sdFontSystem.releaseForNetwork(renderer);
+}
+
+void BookOrbitCatalogBrowserActivity::setNetworkProgressPhase(const bool renderProgress) {
+  RenderLock lock(*this);
+  networkProgressPhase.store(renderProgress, std::memory_order_release);
+}
+
+void BookOrbitCatalogBrowserActivity::endNetworkPhase() {
+  RenderLock lock(*this);
+  if (networkPhaseDepth == 0 || --networkPhaseDepth != 0) return;
+  sdFontSystem.ensureUiFallbacks(renderer);
+  networkProgressPhase.store(false, std::memory_order_release);
+  networkPhase.store(false, std::memory_order_release);
 }
 
 void BookOrbitCatalogBrowserActivity::showLoadingBeforeFetch() {
@@ -237,12 +264,18 @@ bool BookOrbitCatalogBrowserActivity::loadRoot(const bool allowNetwork) {
   if (!cacheHit && !allowNetwork) {
     return false;
   }
-  if (!cacheHit && !BookOrbitCatalogClient::fetchRootSections(sections)) {
-    state = BrowserState::ERROR;
-    errorMessage = BookOrbitCatalogClient::lastFetchBadResponse ? tr(STR_BOOKORBIT_CATALOG_BAD_RESPONSE)
-                                                                : tr(STR_BOOKORBIT_CATALOG_ERROR);
-    requestUpdate();
-    return false;
+  bool networkPhaseStarted = false;
+  if (!cacheHit) {
+    beginNetworkPhase();
+    networkPhaseStarted = true;
+    if (!BookOrbitCatalogClient::fetchRootSections(sections)) {
+      state = BrowserState::ERROR;
+      errorMessage = BookOrbitCatalogClient::lastFetchBadResponse ? tr(STR_BOOKORBIT_CATALOG_BAD_RESPONSE)
+                                                                  : tr(STR_BOOKORBIT_CATALOG_ERROR);
+      endNetworkPhase();
+      requestUpdate();
+      return false;
+    }
   }
   if (!cacheHit) {
     BookOrbitCatalogListCache::saveRootSections(sections);
@@ -253,9 +286,18 @@ bool BookOrbitCatalogBrowserActivity::loadRoot(const bool allowNetwork) {
   // with the listings. Non-fatal — an older server without the dashboard just
   // shows the sections without counts.
   BookOrbitCatalogCounts counts;
-  if (!BookOrbitCatalogListCache::loadCatalogCounts(counts) && allowNetwork &&
-      BookOrbitCatalogClient::fetchCatalogCounts(counts)) {
-    BookOrbitCatalogListCache::saveCatalogCounts(counts);
+  if (!BookOrbitCatalogListCache::loadCatalogCounts(counts) && allowNetwork) {
+    if (!networkPhaseStarted) {
+      beginNetworkPhase();
+      networkPhaseStarted = true;
+    }
+    if (BookOrbitCatalogClient::fetchCatalogCounts(counts)) {
+      BookOrbitCatalogListCache::saveCatalogCounts(counts);
+    }
+  }
+  if (!networkPhaseStarted) {
+    RenderLock lock(*this);
+    sdFontSystem.ensureUiFallbacks(renderer);
   }
   const auto sectionCount = [&counts](const std::string& id) {
     if (id == "all-books" || id == "recent") return counts.totalBooks;
@@ -304,6 +346,7 @@ bool BookOrbitCatalogBrowserActivity::loadRoot(const bool allowNetwork) {
   selectorIndex = 0;
   state = entries.empty() ? BrowserState::ERROR : BrowserState::BROWSING;
   if (entries.empty()) errorMessage = tr(STR_NO_ENTRIES);
+  if (networkPhaseStarted) endNetworkPhase();
   requestUpdate();
   return true;
 }
@@ -430,12 +473,17 @@ bool BookOrbitCatalogBrowserActivity::loadFacetEntries(const std::string& sectio
   if (!cacheHit && !allowNetwork) {
     return false;
   }
-  if (!cacheHit && !BookOrbitCatalogClient::fetchSectionEntries(sectionId, page, result)) {
-    state = BrowserState::ERROR;
-    errorMessage = BookOrbitCatalogClient::lastFetchBadResponse ? tr(STR_BOOKORBIT_CATALOG_BAD_RESPONSE)
-                                                                : tr(STR_BOOKORBIT_CATALOG_ERROR);
-    requestUpdate();
-    return false;
+  if (!cacheHit) {
+    beginNetworkPhase();
+    const bool fetched = BookOrbitCatalogClient::fetchSectionEntries(sectionId, page, result);
+    if (!fetched) {
+      state = BrowserState::ERROR;
+      errorMessage = BookOrbitCatalogClient::lastFetchBadResponse ? tr(STR_BOOKORBIT_CATALOG_BAD_RESPONSE)
+                                                                  : tr(STR_BOOKORBIT_CATALOG_ERROR);
+      endNetworkPhase();
+      requestUpdate();
+      return false;
+    }
   }
   if (!cacheHit) {
     BookOrbitCatalogListCache::saveFacetPage(sectionId, page, result);
@@ -471,6 +519,7 @@ bool BookOrbitCatalogBrowserActivity::loadFacetEntries(const std::string& sectio
   }
   state = entries.empty() ? BrowserState::ERROR : BrowserState::BROWSING;
   if (entries.empty()) errorMessage = tr(STR_NO_ENTRIES);
+  if (!cacheHit) endNetworkPhase();
   requestUpdate();
   return true;
 }
@@ -483,12 +532,17 @@ bool BookOrbitCatalogBrowserActivity::loadBooks(const BookOrbitBookQuery& query,
   if (!cacheHit && !allowNetwork) {
     return false;
   }
-  if (!cacheHit && !BookOrbitCatalogClient::fetchBooks(query, page, result)) {
-    state = BrowserState::ERROR;
-    errorMessage = BookOrbitCatalogClient::lastFetchBadResponse ? tr(STR_BOOKORBIT_CATALOG_BAD_RESPONSE)
-                                                                : tr(STR_BOOKORBIT_CATALOG_ERROR);
-    requestUpdate();
-    return false;
+  if (!cacheHit) {
+    beginNetworkPhase();
+    const bool fetched = BookOrbitCatalogClient::fetchBooks(query, page, result);
+    if (!fetched) {
+      state = BrowserState::ERROR;
+      errorMessage = BookOrbitCatalogClient::lastFetchBadResponse ? tr(STR_BOOKORBIT_CATALOG_BAD_RESPONSE)
+                                                                  : tr(STR_BOOKORBIT_CATALOG_ERROR);
+      endNetworkPhase();
+      requestUpdate();
+      return false;
+    }
   }
   if (!cacheHit) {
     BookOrbitCatalogListCache::saveBooksPage(query, page, result);
@@ -525,6 +579,7 @@ bool BookOrbitCatalogBrowserActivity::loadBooks(const BookOrbitBookQuery& query,
   }
   state = entries.empty() ? BrowserState::ERROR : BrowserState::BROWSING;
   if (entries.empty()) errorMessage = tr(STR_NO_ENTRIES);
+  if (!cacheHit) endNetworkPhase();
   requestUpdate();
   return true;
 }
@@ -607,23 +662,35 @@ void BookOrbitCatalogBrowserActivity::performSearch(const std::string& query) {
 
 void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const std::string& title,
                                                    const std::string& replacePath) {
-  state = BrowserState::DOWNLOADING;
-  // Truncate once, up front: render() used to re-truncate this unchanging title on
-  // every progress repaint, an avoidable heap allocation racing the TLS session's
-  // own tight budget mid-download (see HttpDownloader heap notes).
-  statusMessage = renderer.truncatedText(UI_10_FONT_ID, title.c_str(), renderer.getScreenWidth() - 40);
-  downloadProgress = downloadTotal = 0;
-  goHomeAfterCancel = false;
-  requestUpdate(true);
+  {
+    RenderLock lock(*this);
+    state = BrowserState::DOWNLOADING;
+    // Truncate once, up front: render() used to re-truncate this unchanging title on
+    // every progress repaint, an avoidable heap allocation racing the TLS session's
+    // own tight budget mid-download (see HttpDownloader heap notes).
+    statusMessage = renderer.truncatedText(UI_10_FONT_ID, title.c_str(), renderer.getScreenWidth() - 40);
+    downloadProgress = downloadTotal = 0;
+    goHomeAfterCancel = false;
+  }
+  if (requestUpdateAndWait() != RequestUpdateResult::Rendered) {
+    LOG_ERR("BookOrbit", "Download screen could not be rendered before catalog fetch");
+    state = BrowserState::BROWSING;
+    requestUpdate(true);
+    return;
+  }
 
   BookOrbitBookDetail detail;
-  if (!BookOrbitCatalogClient::fetchBookDetail(bookId, detail)) {
+  beginNetworkPhase();
+  const bool detailFetched = BookOrbitCatalogClient::fetchBookDetail(bookId, detail);
+  if (!detailFetched) {
     state = BrowserState::ERROR;
     errorMessage = BookOrbitCatalogClient::lastFetchBadResponse ? tr(STR_BOOKORBIT_CATALOG_BAD_RESPONSE)
                                                                 : tr(STR_BOOKORBIT_CATALOG_ERROR);
+    endNetworkPhase();
     requestUpdate();
     return;
   }
+  endNetworkPhase();
 
   BookOrbitCatalogFile epubFile;
   if (!hasEpubFile(detail, epubFile)) {
@@ -704,6 +771,7 @@ void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const s
   unsigned long lastProgressUpdateMs = 0;
   unsigned long now = 0;
   int percent = 0;
+  beginNetworkPhase(/*renderProgress=*/true);
   for (int attempt = 0; attempt < MAX_DOWNLOAD_ATTEMPTS; attempt++) {
     // Honor a Back press between attempts too: a failing download otherwise runs
     // all its retries (TLS handshake included) with the cancel request ignored.
@@ -716,10 +784,13 @@ void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const s
         epubFile.id, finalPath,
         [this, &lastRenderedPercent, &lastProgressUpdateMs, &percent, &now](const size_t downloaded,
                                                                             const size_t total) {
-          downloadProgress = downloaded;
-          downloadTotal = total;
           percent = total > 0 ? static_cast<int>(static_cast<uint64_t>(downloaded) * 100 / total) : 0;
           now = millis();
+          {
+            RenderLock lock(*this);
+            downloadProgress = downloaded;
+            downloadTotal = total;
+          }
           // Throttle e-ink refreshes to meaningful progress steps: partial
           // refreshes still wear the panel, and a raw byte-count callback fires
           // far more often than the screen needs to redraw.
@@ -749,6 +820,8 @@ void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const s
     Storage.remove((finalPath + STAGED_DOWNLOAD_SUFFIX).c_str());
   }
 
+  setNetworkProgressPhase(false);
+
   if (result == HttpDownloader::OK) {
     clearBookCache(finalPath);
     BookOrbitDownloadIndex::record(bookId, finalPath);
@@ -757,6 +830,7 @@ void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const s
   } else if (result == HttpDownloader::ABORTED) {
     LOG_DBG("BookOrbit", "Download cancelled");
     if (goHomeAfterCancel) {
+      endNetworkPhase();
       onGoHome();
       return;
     }
@@ -775,6 +849,7 @@ void BookOrbitCatalogBrowserActivity::downloadBook(const int64_t bookId, const s
     state = BrowserState::ERROR;
   }
 
+  endNetworkPhase();
   requestUpdate();
 }
 
@@ -1193,6 +1268,22 @@ void BookOrbitCatalogBrowserActivity::buildListScreen(UiApp::ScreenType& screen)
 }
 
 void BookOrbitCatalogBrowserActivity::render(RenderLock&&) {
+  if (networkPhase.load(std::memory_order_acquire)) {
+    if (networkProgressPhase.load(std::memory_order_acquire) && downloadTotal > 0) {
+      const int pageHeight = renderer.getScreenHeight();
+      const int pageWidth = renderer.getScreenWidth();
+      const Rect progressRect{50, pageHeight / 2 + 20, pageWidth - 100, 20};
+      const int labelBaseline = progressRect.y + progressRect.height + 15;
+      const auto labelBounds = renderer.getTextVerticalBounds(UI_10_FONT_ID, "100%");
+      const int labelBottom = labelBaseline + labelBounds.bottom;
+      const int clearHeight = std::max(progressRect.height, labelBottom - progressRect.y + 1);
+      renderer.fillRect(progressRect.x, progressRect.y, progressRect.width, clearHeight, false);
+      GUI.drawProgressBar(renderer, progressRect, downloadProgress, downloadTotal);
+      renderer.displayBuffer();
+    }
+    return;
+  }
+
   renderer.clearScreen();
 
   const auto pageWidth = renderer.getScreenWidth();

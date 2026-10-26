@@ -93,6 +93,9 @@ class BookOrbitCatalogBrowserActivity final : public Activity {
   // render() rebuilds the app's interaction table; loop() only routes touch
   // snapshots against it while this is true (the two run on different tasks).
   std::atomic<bool> uiReady{false};
+  std::atomic<bool> networkPhase{false};
+  std::atomic<bool> networkProgressPhase{false};
+  uint8_t networkPhaseDepth = 0;
   int visibleRows = 1;  // rows per page at the current scale; set by the screen builder
   int topIndex = 0;     // viewport scroll position, decoupled from the selection
 
@@ -108,6 +111,9 @@ class BookOrbitCatalogBrowserActivity final : public Activity {
   void checkAndConnectWifi();
   void launchWifiSelection();
   void onWifiSelectionComplete(bool connected);
+  void beginNetworkPhase(bool renderProgress = false);
+  void setNetworkProgressPhase(bool renderProgress);
+  void endNetworkPhase();
   void showLoadingBeforeFetch();
   bool loadRoot(bool allowNetwork = true);
   void loadLocalBooks(const std::string& kind);

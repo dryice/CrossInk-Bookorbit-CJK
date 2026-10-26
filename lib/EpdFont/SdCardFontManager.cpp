@@ -78,7 +78,7 @@ bool SdCardFontManager::loadFamilyClosest(const SdCardFontFamilyInfo& family, Gf
     return loadScalable(family, renderer, targetPointSize, defaults);
   }
 #endif
-  if (!loadedFamilyName_.empty()) {
+  if (hasAnyLoadedFont()) {
     unloadAll(renderer);
   }
 
@@ -108,7 +108,7 @@ bool SdCardFontManager::loadFamilyClosest(const SdCardFontFamilyInfo& family, Gf
 
 bool SdCardFontManager::loadFamilyFile(const char* path, const char* familyName, uint8_t pointSize,
                                        GfxRenderer& renderer) {
-  if (!loadedFamilyName_.empty()) {
+  if (hasAnyLoadedFont()) {
     unloadAll(renderer);
   }
   if (loadFilePath(path, familyName, pointSize, renderer) == 0) {
@@ -142,6 +142,16 @@ int SdCardFontManager::loadFamilyExtraFile(const char* path, const char* familyN
     if (lf.size == pointSize) return lf.fontId;
   }
   return loadFilePath(path, familyName, pointSize, renderer);
+}
+
+int SdCardFontManager::loadFamilyExtraClosest(const SdCardFontFamilyInfo& family, GfxRenderer& renderer,
+                                              const uint8_t targetPointSize) {
+  const SdCardFontFileInfo* selected = family.findClosestFile(targetPointSize);
+  if (!selected) return 0;
+  for (const auto& lf : loaded_) {
+    if (lf.size == selected->pointSize) return lf.fontId;
+  }
+  return loadFile(*selected, family.name.c_str(), renderer);
 }
 
 void SdCardFontManager::unloadAll(GfxRenderer& renderer) {

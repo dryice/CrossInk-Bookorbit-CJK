@@ -5,6 +5,19 @@ records only its own additions. Each release states the CrossInk version it is b
 on; for everything inherited from upstream, see the
 [CrossInk changelog](https://github.com/uxjulia/CrossInk/blob/main/CHANGELOG.md).
 
+## [Unreleased]
+
+### Added
+
+- Reader Font Options now has an independent **UI Font** family choice. It defaults to the reader SD family and can be set to a CJK `.cpfont` family without changing book typography.
+
+### Fixed
+
+- Chinese and mixed-language book titles and authors in the BookOrbit catalog now remain readable after opening a book with a per-book built-in font. Exact UI sizes are preferred; each missing size uses its nearest installed family size.
+- The UI CJK fallback now also covers the Library, home screen, file browser, and bookmarks & clippings list, and re-registers itself when another screen (Wi-Fi selection, sync, transfers) released the SD fonts.
+- UI fallback sizes are now chosen by measured CJK coverage. A family size that carries only Latin text or a token CJK sample no longer captures a UI slot, so those screens use the nearest size that actually covers everyday characters instead of rendering Chinese as replacement diamonds.
+- Cold SD-font glyph lookups on non-reader screens now use the existing on-demand glyph loader, so fallback fonts render real glyphs before a reader-page prewarm has run.
+
 ## [v1.6.1+bookorbit.2] - 2026-10-13
 
 Based on CrossInk v1.6.1.

@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <functional>
 
+#include "activities/UiCjkFallback.h"
 #include "activities/home/BookActions.h"
 #include "activities/home/FileBrowserActionActivity.h"
 #include "activities/home/RecentBookProgress.h"
@@ -129,6 +130,10 @@ void LibraryActivity::onEnter() {
     RenderLock lock;
     refreshIndexIfNeeded();
     initialScanPending = false;
+    // The list below can carry CJK titles/authors; make sure the UI fallback
+    // fonts are registered before its first render (any network-bearing
+    // screen that ran before this entry released them).
+    if (UiCjk::fallbackMissing(renderer)) sdFontSystem.ensureUiFallbacks(renderer);
     resetViewport();
     ignoreConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
     requestUpdate();
@@ -839,6 +844,12 @@ void LibraryActivity::loop() {
   RenderLock lock(RenderLock::Mode::Try);
   if (!lock.ownsLock()) return;
   inputOverflow = false;
+  // A child screen (sync, transfer, Wi-Fi selection) may have released the SD
+  // fonts and with them the UI CJK fallbacks; heal before the next render.
+  if (UiCjk::fallbackMissing(renderer)) {
+    sdFontSystem.ensureUiFallbacks(renderer);
+    if (!UiCjk::fallbackMissing(renderer)) requestUpdate();
+  }
   if (pendingCacheDeletedFeedback && millis() - cacheDeletedFeedbackShowTime >= ACTION_FEEDBACK_MS) {
     pendingCacheDeletedFeedback = false;
     requestUpdate();

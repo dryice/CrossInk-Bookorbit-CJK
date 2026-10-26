@@ -11,6 +11,8 @@ class EpdFont {
   void getTextDimensions(const char* string, int* w, int* h) const;
 
   const EpdGlyph* findGlyph(uint32_t cp) const;
+  // Consults the on-demand loader but never substitutes U+FFFD for a miss.
+  const EpdGlyph* getGlyphExact(uint32_t cp) const;
   const EpdGlyph* getGlyph(uint32_t cp) const;
 
   /// Returns true if this font covers `cp`: either via its in-RAM interval

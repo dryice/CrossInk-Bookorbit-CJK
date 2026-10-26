@@ -4,6 +4,27 @@
 
 #include <algorithm>
 
+namespace {
+
+EpdFontFamily::GlyphData findOnDemandGlyph(const EpdFont* const* fonts, const size_t fontCount, const uint32_t cp) {
+  for (size_t i = 0; i < fontCount; ++i) {
+    const EpdFont* font = fonts[i];
+    if (font == nullptr) continue;
+    bool alreadyChecked = false;
+    for (size_t previous = 0; previous < i; ++previous) {
+      if (fonts[previous] == font) {
+        alreadyChecked = true;
+        break;
+      }
+    }
+    if (alreadyChecked) continue;
+    if (const EpdGlyph* glyph = font->getGlyphExact(cp)) return {font->data, glyph};
+  }
+  return {nullptr, nullptr};
+}
+
+}  // namespace
+
 const EpdFont* EpdFontFamily::getFont(const Style style) const {
   // Extract font variant bits; decoration and positioning bits do not affect font selection.
   const bool hasBold = (style & BOLD) != 0;
@@ -220,6 +241,17 @@ EpdFontFamily::GlyphData EpdFontFamily::getGlyphData(const uint32_t cp, const St
     return glyphData;
   }
 
+  // A freshly loaded SD-card font serves stub data: its glyph array exists only
+  // after the reader's prewarm built the mini tables, so the pure lookup above
+  // misses every codepoint. EpdFont::getGlyph() additionally consults the
+  // font's on-demand loader (SdCardFont's overflow ring, backed by a storage
+  // read). Screens that draw without a prewarm scope — every UI screen using
+  // a CJK fallback — depend on this path; without it each character renders as
+  // the replacement diamond.
+  {
+    const EpdFont* fonts[] = {getFont(style), regular, fallback};
+    if (const GlyphData glyphData = findOnDemandGlyph(fonts, 3, cp); glyphData.glyph) return glyphData;
+  }
   if (cp != REPLACEMENT_GLYPH) {
     return getGlyphData(REPLACEMENT_GLYPH, style);
   }
@@ -232,9 +264,18 @@ const EpdGlyph* EpdFontFamily::getGlyph(const uint32_t cp, const Style style) co
 
 uint32_t EpdFontFamily::getFallbackCodepoint(const uint32_t cp, const Style style) const {
   if (findGlyphData(cp, style).glyph) return cp;
+  // Cold SD-card font: the on-demand loader can still serve the glyph (see
+  // getGlyphData); only treat it as missing when that also fails.
+  if (cp != REPLACEMENT_GLYPH) {
+    const EpdFont* fonts[] = {getFont(style), regular, fallback};
+    if (findOnDemandGlyph(fonts, 3, cp).glyph) return cp;
+  }
   const uint32_t aliasCp = syntheticGlyph::aliasCodepoint(cp);
   if (aliasCp != cp) {
-    return findGlyphData(aliasCp, style).glyph ? aliasCp : REPLACEMENT_GLYPH;
+    if (findGlyphData(aliasCp, style).glyph) return aliasCp;
+    const EpdFont* fonts[] = {getFont(style), regular, fallback};
+    if (findOnDemandGlyph(fonts, 3, aliasCp).glyph) return aliasCp;
+    return REPLACEMENT_GLYPH;
   }
   if (syntheticGlyph::isSpaceFallback(cp)) return cp;
   if (syntheticGlyph::isSolid(cp) || syntheticGlyph::isGreekFallback(cp)) return cp;

@@ -528,6 +528,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["readerFrontButtonRight"] = readerFrontButtonRight;
   doc["fontFamily"] = fontFamily;
   if (sdFontFamilyName[0] != '\0') doc["sdFontFamilyName"] = sdFontFamilyName;
+  if (sdUiFontFamilyName[0] != '\0') doc["sdUiFontFamilyName"] = sdUiFontFamilyName;
   if (dictionarySdFontFamilyName[0] != '\0') doc["dictionaryFont"] = dictionarySdFontFamilyName;
   doc["dictionaryFontSize"] = dictionaryFontPointSize;
   JsonArray quickActionSlotsJson = doc["quickActionSlots"].to<JsonArray>();
@@ -895,6 +896,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc, bool importingCrossPoint
   const char* sdFamily = doc["sdFontFamilyName"] | "";
   strncpy(sdFontFamilyName, sdFamily, sizeof(sdFontFamilyName) - 1);
   sdFontFamilyName[sizeof(sdFontFamilyName) - 1] = '\0';
+  const char* sdUiFamily = doc["sdUiFontFamilyName"] | "";
+  strncpy(sdUiFontFamilyName, sdUiFamily, sizeof(sdUiFontFamilyName) - 1);
+  sdUiFontFamilyName[sizeof(sdUiFontFamilyName) - 1] = '\0';
   const char* dictionaryFamily = doc["dictionaryFont"] | "";
   strncpy(dictionarySdFontFamilyName, dictionaryFamily, sizeof(dictionarySdFontFamilyName) - 1);
   dictionarySdFontFamilyName[sizeof(dictionarySdFontFamilyName) - 1] = '\0';

@@ -256,6 +256,43 @@ inline SettingInfo buildDictionaryFontFamilySetting(const SdCardFontRegistry* re
   return s;
 }
 
+inline SettingInfo buildUiFontFamilySetting(const SdCardFontRegistry* registry) {
+  SettingInfo s;
+  s.nameId = StrId::STR_UI_FONT_FAMILY;
+  s.type = SettingType::ENUM;
+  s.key = nullptr;
+  s.category = StrId::STR_CAT_READER;
+  s.enumStringValues.push_back(I18N.get(StrId::STR_USE_READER_FONT));
+
+  std::vector<std::string> familyNames;
+  if (registry) {
+    const auto& families = registry->getFamilies();
+    familyNames.reserve(families.size());
+    s.enumStringValues.reserve(families.size() + 1);
+    for (const auto& family : families) {
+      if (family.isScalable()) continue;
+      familyNames.push_back(family.name);
+      s.enumStringValues.push_back(family.name);
+    }
+  }
+
+  s.valueGetter = [familyNames]() -> uint8_t {
+    for (size_t i = 0; i < familyNames.size(); ++i) {
+      if (familyNames[i] == SETTINGS.sdUiFontFamilyName) return static_cast<uint8_t>(i + 1);
+    }
+    return 0;
+  };
+  s.valueSetter = [familyNames](const uint8_t value) {
+    if (value == 0 || value > familyNames.size()) {
+      SETTINGS.sdUiFontFamilyName[0] = '\0';
+      return;
+    }
+    strncpy(SETTINGS.sdUiFontFamilyName, familyNames[value - 1].c_str(), sizeof(SETTINGS.sdUiFontFamilyName) - 1);
+    SETTINGS.sdUiFontFamilyName[sizeof(SETTINGS.sdUiFontFamilyName) - 1] = '\0';
+  };
+  return s;
+}
+
 inline SettingInfo buildDictionaryFontSizeSetting(const SdCardFontRegistry* registry) {
   SettingInfo s;
   s.nameId = StrId::STR_DICTIONARY_FONT_SIZE;
@@ -749,6 +786,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     if (fontSizeIt != v.end()) {
       *fontSizeIt = buildFontSizeSetting(registry);
     }
+    v.push_back(buildUiFontFamilySetting(registry));
   }
   if (dictRegistry) {
     if (dictRegistry->count() > 0) {
@@ -807,6 +845,7 @@ inline std::vector<SettingInfo> buildReaderFontSettingsList(const std::vector<Se
   settings.reserve(10);
   addSettingByName(settings, allSettings, StrId::STR_FONT_FAMILY);
   addSettingByName(settings, allSettings, StrId::STR_FONT_SIZE);
+  addSettingByName(settings, allSettings, StrId::STR_UI_FONT_FAMILY);
   addSettingByName(settings, allSettings, StrId::STR_DICTIONARY_FONT);
   addSettingByName(settings, allSettings, StrId::STR_DICTIONARY_FONT_SIZE);
   addSettingByName(settings, allSettings, StrId::STR_LINE_SPACING);
