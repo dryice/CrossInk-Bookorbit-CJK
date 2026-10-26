@@ -17,6 +17,7 @@
 #include "TtfRenderProfileStore.h"
 #endif
 #include "fontIds.h"
+#include "util/CjkDiag.h"
 
 namespace {
 struct UiFontSize {
@@ -24,11 +25,29 @@ struct UiFontSize {
   uint8_t pointSize;
 };
 
-constexpr UiFontSize kUiFontSizes[] = {
-    {SMALL_FONT_ID, 8},
-    {UI_10_FONT_ID, 10},
+constexpr UiFontSize kUiFallbackOrder[] = {
     {UI_12_FONT_ID, 12},
+    {UI_10_FONT_ID, 10},
+    {SMALL_FONT_ID, 8},
 };
+
+uint8_t cjkCoverageScore(const EpdFontFamily& family) {
+  uint8_t score = 0;
+  for (const uint32_t cp : SdFontCjkCoverage::kSample) {
+    if (family.hasCodepoint(cp)) ++score;
+  }
+  return score;
+}
+
+bool fontIdHasCjkCoverage(const GfxRenderer& renderer, const int fontId) {
+  const auto it = renderer.getFontMap().find(fontId);
+  return it != renderer.getFontMap().end() && cjkCoverageScore(it->second) >= SdFontCjkCoverage::kMinScore;
+}
+
+uint8_t fontIdCjkCoverageScore(const GfxRenderer& renderer, const int fontId) {
+  const auto it = renderer.getFontMap().find(fontId);
+  return it == renderer.getFontMap().end() ? 0 : cjkCoverageScore(it->second);
+}
 
 enum class FontFileSelection : uint8_t { Closest, Exact };
 
@@ -162,7 +181,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
   uint8_t targetPointSize = SETTINGS.getSdFontTargetPointSize();
 
   if (wantedFamily[0] == '\0') {
-    if (!currentFamily.empty()) {
+    if (manager_.hasAnyLoadedFont()) {
       manager_.unloadAll(renderer);
       loadedFontPointSize_ = 0;
     }
@@ -227,7 +246,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
             targetPointSize, registryWasDirty ? " [registry dirty]" : "");
   }
 
-  if (!currentFamily.empty() && (!family || !family->isScalable() || !familyMatches || registryWasDirty)) {
+  if (manager_.hasAnyLoadedFont() && (!family || !family->isScalable() || !familyMatches || registryWasDirty)) {
     manager_.unloadAll(renderer);
   }
 
@@ -307,13 +326,16 @@ void SdCardFontSystem::releaseLoadedFont(GfxRenderer& renderer) {
 #if CROSSINK_SCALABLE_FONTS
   ScalableFontAccess access;
 #endif
-  if (manager_.currentFamilyName().empty()) return;
+  // Extra UI fallback sizes load without a family name set, so the family
+  // name alone cannot decide whether anything is resident.
+  if (!manager_.hasAnyLoadedFont()) return;
 
   const std::string familyName = manager_.currentFamilyName();
   (void)familyName;
   manager_.unloadAll(renderer);
   loadedFontPointSize_ = 0;
-  LOG_DBG("SDFS", "Released SD card font before low-memory operation: %s", familyName.c_str());
+  LOG_DBG("SDFS", "Released SD card fonts before low-memory operation: %s",
+          familyName.empty() ? "(UI sizes only)" : familyName.c_str());
 }
 
 void SdCardFontSystem::ensureRegistry() {
@@ -347,6 +369,153 @@ void SdCardFontSystem::releaseForNetwork(GfxRenderer& renderer) {
   registryDirty_.store(true, std::memory_order_release);
 }
 
+void SdCardFontSystem::ensureUiFallbacks(GfxRenderer& renderer) {
+  const char* wantedFamily = SETTINGS.getEffectiveUiFontFamilyName();
+  if (!wantedFamily || wantedFamily[0] == '\0') {
+    if (uiFallbacksFamily_.empty() && !uiFallbacksRegistered_ && !renderer.hasFallbackFont(UI_12_FONT_ID)) return;
+    if (manager_.currentFamilyName().empty() && manager_.hasAnyLoadedFont()) {
+      manager_.unloadAll(renderer);
+      loadedFontPointSize_ = 0;
+    } else {
+      renderer.clearFallbackFonts();
+    }
+    uiFallbacksFamily_.clear();
+    uiFallbacksRegistered_ = false;
+    uiFallbacksRegistryRevision_ = registry_.revision();
+    return;
+  }
+
+  const bool registryMayHaveChanged = registryDirty_.load(std::memory_order_acquire) || registry_.needsRefresh() ||
+                                      uiFallbacksRegistryRevision_ != registry_.revision();
+  const bool familyChanged = uiFallbacksFamily_ != wantedFamily;
+  const bool registryCurrent = !registryMayHaveChanged;
+  if (uiFallbacksFamily_ == wantedFamily && registryCurrent &&
+      (!uiFallbacksRegistered_ || renderer.hasFallbackFont(UI_12_FONT_ID))) {
+    return;
+  }
+
+  CjkDiag::log(
+      "ensureUiFallbacks: family='%s' cachedFamily='%s' familyChanged=%d registryDirty=%d needsRefresh=%d "
+      "revisionChanged=%d",
+      wantedFamily, uiFallbacksFamily_.c_str(), familyChanged, registryDirty_.load(std::memory_order_acquire),
+      registry_.needsRefresh(), uiFallbacksRegistryRevision_ != registry_.revision());
+
+  if ((familyChanged || registryMayHaveChanged) && manager_.hasAnyLoadedFont()) {
+    manager_.unloadAll(renderer);
+    loadedFontPointSize_ = 0;
+  }
+
+  ensureRegistry();
+  if (registry_.lastDiscoveryFailed()) {
+    CjkDiag::log("ensureUiFallbacks: registry discovery FAILED");
+    return;
+  }
+
+  const auto* family = registry_.findFamily(wantedFamily);
+  if (family && !family->ensureDetails()) family = nullptr;
+
+  uiFallbacksFamily_ = wantedFamily;
+  uiFallbacksRegistryRevision_ = registry_.revision();
+  uiFallbacksRegistered_ = false;
+  if (!family) {
+    CjkDiag::log("ensureUiFallbacks: family not installed: %s", wantedFamily);
+    return;
+  }
+  {
+    char sizes[96];
+    size_t offset = 0;
+    const auto available = family->availableSizes();
+    for (size_t i = 0; i < available.size() && offset + 6 < sizeof(sizes); ++i) {
+      offset += static_cast<size_t>(
+          snprintf(sizes + offset, sizeof(sizes) - offset, "%s%u", i ? "," : "", static_cast<unsigned>(available[i])));
+    }
+    CjkDiag::log("ensureUiFallbacks: family='%s' scalable=%d sizes=[%s]", wantedFamily, family->isScalable(), sizes);
+  }
+#if CROSSINK_SCALABLE_FONTS
+  if (family->isScalable() && !manager_.hasResidentScalableFamily(wantedFamily)) {
+    // Registering TTF UI sizes needs the resident faces; loading a TTF family
+    // just for UI text is not worth the heap during network-heavy screens.
+    CjkDiag::log("ensureUiFallbacks: TTF family not resident: %s", wantedFamily);
+    return;
+  }
+#endif
+  uiFallbacksRegistered_ = registerUiFallbackSizes(renderer, *family, 0);
+  CjkDiag::log("ensureUiFallbacks: registered=%d family='%s'", uiFallbacksRegistered_ ? 1 : 0, wantedFamily);
+  if (!uiFallbacksRegistered_) {
+    LOG_DBG("SDFS", "%s provides no CJK UI fallback sizes", wantedFamily);
+  }
+}
+bool SdCardFontSystem::registerUiFallbackSizes(GfxRenderer& renderer, const SdCardFontFamilyInfo& family,
+                                               const int seedFontId) {
+  int cjkFontId = seedFontId != 0 && fontIdHasCjkCoverage(renderer, seedFontId) ? seedFontId : 0;
+  bool registeredAny = false;
+  for (const auto& ui : kUiFallbackOrder) {
+    // Only wire a slot to a size that covers everyday CJK: a subset small
+    // size routes nothing and every Chinese character becomes a replacement
+    // diamond on the Latin UI font.
+    int candidate = manager_.loadFamilyExtraSize(family, renderer, ui.pointSize);
+    if (candidate != 0 && !fontIdHasCjkCoverage(renderer, candidate)) {
+      CjkDiag::log("registerUiFallbacks: slot %u pt exact load id=%d score=%u REJECTED (sparse)",
+                   static_cast<unsigned>(ui.pointSize), candidate, fontIdCjkCoverageScore(renderer, candidate));
+      candidate = 0;
+    }
+    if (candidate == 0) {
+      candidate = manager_.loadFamilyExtraClosest(family, renderer, ui.pointSize);
+      if (candidate != 0 && !fontIdHasCjkCoverage(renderer, candidate)) {
+        CjkDiag::log("registerUiFallbacks: slot %u pt nearest load id=%d score=%u REJECTED (sparse)",
+                     static_cast<unsigned>(ui.pointSize), candidate, fontIdCjkCoverageScore(renderer, candidate));
+        candidate = 0;
+      }
+    }
+    if (candidate == 0) candidate = loadCjkCoveringExtraSize(family, renderer, ui.pointSize);
+    if (candidate == 0) candidate = cjkFontId;
+    if (candidate == 0) {
+      CjkDiag::log("registerUiFallbacks: slot %u pt has no covering size", static_cast<unsigned>(ui.pointSize));
+      continue;
+    }
+    if (cjkFontId == 0) cjkFontId = candidate;
+    renderer.setFallbackFont(ui.fontId, candidate);
+    CjkDiag::log("registerUiFallbacks: slot fontId=%d <- %u pt file id=%d score=%u", ui.fontId,
+                 static_cast<unsigned>(ui.pointSize), candidate, fontIdCjkCoverageScore(renderer, candidate));
+    registeredAny = true;
+  }
+  if (!registeredAny) {
+    LOG_DBG("SDFS", "%s provides no CJK UI fallback sizes", family.name.c_str());
+    manager_.unloadAll(renderer);
+    return false;
+  }
+  return true;
+}
+
+int SdCardFontSystem::loadCjkCoveringExtraSize(const SdCardFontFamilyInfo& family, GfxRenderer& renderer,
+                                               const uint8_t targetPointSize) {
+#if CROSSINK_SCALABLE_FONTS
+  if (family.isScalable()) return 0;  // every TTF size rasterizes from the same resident faces
+#endif
+  std::vector<uint8_t> sizes = family.availableSizes();
+  while (!sizes.empty()) {
+    const auto distance = [targetPointSize](const uint8_t size) {
+      return size > targetPointSize ? size - targetPointSize : targetPointSize - size;
+    };
+    size_t nearest = 0;
+    for (size_t i = 1; i < sizes.size(); ++i) {
+      if (distance(sizes[i]) < distance(sizes[nearest])) nearest = i;
+    }
+    const uint8_t size = sizes[nearest];
+    sizes.erase(sizes.begin() + static_cast<long>(nearest));
+    const int fontId = manager_.loadFamilyExtraSize(family, renderer, size);
+    if (fontId != 0 && fontIdHasCjkCoverage(renderer, fontId)) {
+      CjkDiag::log("loadCjkCoveringExtraSize: %u pt id=%d score=%u ACCEPTED for %u pt slot",
+                   static_cast<unsigned>(size), fontId, fontIdCjkCoverageScore(renderer, fontId),
+                   static_cast<unsigned>(targetPointSize));
+      return fontId;
+    }
+    CjkDiag::log("loadCjkCoveringExtraSize: %u pt id=%d score=%u rejected for %u pt slot", static_cast<unsigned>(size),
+                 fontId, fontIdCjkCoverageScore(renderer, fontId), static_cast<unsigned>(targetPointSize));
+  }
+  return 0;
+}
+
 void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
   const std::string& familyName = manager_.currentFamilyName();
   if (familyName.empty()) return;
@@ -354,56 +523,42 @@ void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
   const auto* family = registry_.findFamily(familyName);
   if (!family) return;
 
-  const auto readerIt = renderer.getFontMap().find(manager_.getFontId(familyName));
+  const int seedFontId = manager_.getFontId(familyName);
+  const auto readerIt = renderer.getFontMap().find(seedFontId);
   if (readerIt == renderer.getFontMap().end()) return;
-
-  static constexpr uint32_t kCjkProbes[] = {0x4E00, 0x3042, 0x30A2, 0xAC00};
-  bool hasCjk = false;
-  for (const uint32_t cp : kCjkProbes) {
-    if (readerIt->second.hasCodepoint(cp)) {
-      hasCjk = true;
-      break;
-    }
-  }
-  if (!hasCjk) {
+  if (!fontIdHasCjkCoverage(renderer, seedFontId)) {
     LOG_DBG("SDFS", "%s has no CJK coverage - skipping UI fallback sizes", familyName.c_str());
     return;
   }
 
-  for (const auto& ui : kUiFontSizes) {
-    const int sdFontId = manager_.loadFamilyExtraSize(*family, renderer, ui.pointSize);
-    if (sdFontId != 0) {
-      renderer.setFallbackFont(ui.fontId, sdFontId);
-    } else {
-      LOG_DBG("SDFS", "No %u pt SD glyphs for UI fallback in %s", ui.pointSize, familyName.c_str());
-    }
-  }
+  CjkDiag::log("setupUiFallbacks: reader family='%s' seed id=%d score=%u", familyName.c_str(), seedFontId,
+               fontIdCjkCoverageScore(renderer, seedFontId));
+  uiFallbacksRegistered_ = registerUiFallbackSizes(renderer, *family, seedFontId);
+  uiFallbacksFamily_ = familyName;
+  uiFallbacksRegistryRevision_ = registry_.revision();
 }
 
 void SdCardFontSystem::setupUiFallbacksDirect(GfxRenderer& renderer, const char* familyName) {
   if (!familyName || familyName[0] == '\0') return;
 
-  const auto readerIt = renderer.getFontMap().find(manager_.getFontId(manager_.currentFamilyName()));
+  const int seedFontId = manager_.getFontId(manager_.currentFamilyName());
+  const auto readerIt = renderer.getFontMap().find(seedFontId);
   if (readerIt == renderer.getFontMap().end()) return;
+  if (!fontIdHasCjkCoverage(renderer, seedFontId)) return;
 
-  static constexpr uint32_t kCjkProbes[] = {0x4E00, 0x3042, 0x30A2, 0xAC00};
-  bool hasCjk = false;
-  for (const uint32_t cp : kCjkProbes) {
-    if (readerIt->second.hasCodepoint(cp)) {
-      hasCjk = true;
-      break;
-    }
-  }
-  if (!hasCjk) return;
-
-  for (const auto& ui : kUiFontSizes) {
+  int cjkFontId = seedFontId;
+  for (const auto& ui : kUiFallbackOrder) {
     char path[160] = {};
     uint8_t pointSize = 0;
-    if (!findInstalledFontFile(familyName, ui.pointSize, FontFileSelection::Exact, path, sizeof(path), pointSize)) {
-      continue;
-    }
-    const int sdFontId = manager_.loadFamilyExtraFile(path, familyName, pointSize, renderer);
-    if (sdFontId != 0) renderer.setFallbackFont(ui.fontId, sdFontId);
+    int sdFontId =
+        findInstalledFontFile(familyName, ui.pointSize, FontFileSelection::Closest, path, sizeof(path), pointSize)
+            ? manager_.loadFamilyExtraFile(path, familyName, pointSize, renderer)
+            : 0;
+    if (sdFontId != 0 && !fontIdHasCjkCoverage(renderer, sdFontId)) sdFontId = 0;
+    const int candidate = sdFontId != 0 ? sdFontId : cjkFontId;
+    if (candidate == 0) continue;
+    cjkFontId = candidate;
+    renderer.setFallbackFont(ui.fontId, candidate);
   }
 }
 
@@ -512,7 +667,7 @@ DictionaryFontActivation SdCardFontSystem::activateDictionaryFont(GfxRenderer& r
     // after releasing it so its font data does not cause a false low-memory
     // fallback.
     const auto beforeReaderUnload = heap;
-    if (!manager_.currentFamilyName().empty()) manager_.unloadAll(renderer);
+    if (manager_.hasAnyLoadedFont()) manager_.unloadAll(renderer);
     loadedFontPointSize_ = 0;
     heap = MemoryBudget::snapshot();
     LOG_DBG("SDFS", "Released reader font before dictionary swap retry: free=%u->%u maxAlloc=%u->%u",
@@ -529,7 +684,7 @@ DictionaryFontActivation SdCardFontSystem::activateDictionaryFont(GfxRenderer& r
 
   // unloadAll() also drops optional CJK UI sizes before the dictionary file is
   // allocated, so both families are never resident at once.
-  if (!manager_.currentFamilyName().empty()) {
+  if (manager_.hasAnyLoadedFont()) {
     manager_.unloadAll(renderer);
   }
   loadedFontPointSize_ = 0;
@@ -553,7 +708,7 @@ int SdCardFontSystem::restoreReaderFont(GfxRenderer& renderer) {
 #endif
   const char* familyName = SETTINGS.sdFontFamilyName;
   if (!familyName || familyName[0] == '\0') {
-    if (!manager_.currentFamilyName().empty()) manager_.unloadAll(renderer);
+    if (manager_.hasAnyLoadedFont()) manager_.unloadAll(renderer);
     loadedFontPointSize_ = 0;
     MemoryBudget::logHeapShape("dict.font_after_restore");
     return ensureBuiltInReaderFont(renderer);
@@ -576,14 +731,14 @@ int SdCardFontSystem::restoreReaderFont(GfxRenderer& renderer) {
   if (!findInstalledFontFile(familyName, SETTINGS.getSdFontTargetPointSize(), FontFileSelection::Closest, path,
                              sizeof(path), selectedPointSize)) {
     LOG_ERR("SDFS", "Reader font unavailable while restoring: %s", familyName);
-    if (!manager_.currentFamilyName().empty()) manager_.unloadAll(renderer);
+    if (manager_.hasAnyLoadedFont()) manager_.unloadAll(renderer);
     loadedFontPointSize_ = 0;
     MemoryBudget::logHeapShape("dict.font_after_restore");
     return ensureBuiltInReaderFont(renderer);
   }
 
   if (manager_.currentFamilyName() != familyName || manager_.currentPointSize() != selectedPointSize) {
-    if (!manager_.currentFamilyName().empty()) manager_.unloadAll(renderer);
+    if (manager_.hasAnyLoadedFont()) manager_.unloadAll(renderer);
     if (!manager_.loadFamilyFile(path, familyName, selectedPointSize, renderer)) {
       LOG_ERR("SDFS", "Failed to restore reader font: %s", familyName);
       MemoryBudget::logHeapShape("dict.font_after_restore");
