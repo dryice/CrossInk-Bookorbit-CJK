@@ -56,8 +56,18 @@ class SdCardFontManager {
   // Add an exact extra-size file found by the fixed-buffer dictionary path.
   int loadFamilyExtraFile(const char* path, const char* familyName, uint8_t pointSize, GfxRenderer& renderer);
 
+  // Additively load the .cpfont of `family` closest to `targetPointSize`,
+  // without unloading anything (same additive contract as
+  // loadFamilyExtraSize, for families that ship none of the wanted exact
+  // sizes). Returns the font id, or 0 if the family has no files at all.
+  int loadFamilyExtraClosest(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t targetPointSize);
+
   // Unload everything, unregister from renderer.
   void unloadAll(GfxRenderer& renderer);
+
+  // True while any font is resident: a loaded reader family, dictionary
+  // family, or additively loaded UI fallback size.
+  bool hasAnyLoadedFont() const { return !loaded_.empty(); }
 
   // Look up the font ID for the loaded family. Returns 0 if nothing loaded
   // or familyName doesn't match.
