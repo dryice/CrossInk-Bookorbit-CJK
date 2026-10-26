@@ -81,6 +81,56 @@ This option downloads pre-built `.cpfont` packs.
    or, on an ESP32-S3 device, its static `.ttf` files. The web UI only offers
    TTF uploads on devices that support them.
 
+## CJK Text in the Interface
+
+Screens that show your own text — the Library, the home screen, the file
+browser, the bookmarks & clippings list, and the BookOrbit catalog — use the
+selected SD-card UI font family as their source for CJK fallback glyphs; this
+does not change the interface language or its Latin UI fonts. While a book is
+open, the reader registers the same fallbacks for its status bars. To enable
+Chinese titles, authors, and file names:
+
+1. Install a `.cpfont` family that contains the characters used by your book
+   titles and author names in either `/.fonts/<Family>/` or `/fonts/<Family>/`.
+   The family name is the folder name and each file is named
+   `<Family>_<size>.cpfont`.
+2. For size-matched UI text, include all three files: `<Family>_8.cpfont`,
+   `<Family>_10.cpfont`, and `<Family>_12.cpfont`. These correspond to the
+   firmware's small, 10 pt, and 12 pt UI font slots.
+3. On the device, choose the family under **Settings > Reader > Font Options
+   > UI Font**. The default **Use Reader Font** follows the saved SD reader
+   family, preserving existing behavior. Choose a separate UI family if the
+   global reader font is built in or books have different per-book reader
+   fonts; this setting does not change how books are rendered.
+
+These screens re-register the fallback themselves, including after another
+screen (Wi-Fi selection, a sync, a transfer) temporarily released the SD fonts
+for network work, so the coverage survives moving between screens.
+
+When an SD font has just been loaded, its glyph table is still cold. UI screens
+now fetch missing glyphs from the `.cpfont` on demand; the reader instead
+prewarms each page before rendering it. This keeps the first Library/catalog
+paint readable without loading a whole CJK glyph table into RAM.
+
+If one or more UI sizes are absent, each slot uses the nearest installed family
+size (exact sizes always win). A size is only used when it covers a sample of
+everyday CJK characters: sizes within one family can differ in coverage —
+some converted packs subset their small sizes — and a slot wired to such a
+size would show a replacement diamond for every Chinese character. When a
+family's small sizes are reduced, its nearest fully covering size is used
+instead, so Chinese text can render slightly larger than the slot's nominal
+size. Even a covering size does not guarantee every rare character; pick a
+family that includes the characters your books use. A mixed Latin/CJK line is
+measured and painted with the fallback as a whole, so the selected family
+should include the Latin text and punctuation used alongside its CJK glyphs.
+Latin-only text keeps the built-in UI font and its existing metrics.
+
+The independent **UI Font** list offers bitmap `.cpfont` families. On ESP32-S3,
+a TTF family is only usable for UI fallback while its scalable faces are already
+resident; the catalog releases the reader font before network work to preserve
+TLS heap headroom, so a TTF-only family does not provide independent off-reader
+CJK coverage.
+
 For the full range of text styles with a TTF family, include regular, bold,
 italic, and bold italic files. Variable fonts are not supported. Each `.ttf`
 file must be 2 MiB or smaller, and the family must total 6 MiB or less. See
