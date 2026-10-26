@@ -108,5 +108,6 @@ add_subdirectory(library_input_buffer)
 
 add_subdirectory(library_recent_order)
 add_subdirectory(scalable_fonts)
+add_subdirectory(sdfont_ui_fallback)
 
 add_subdirectory(glyph_bitmap)
