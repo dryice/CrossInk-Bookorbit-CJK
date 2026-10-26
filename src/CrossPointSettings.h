@@ -638,6 +638,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t epubRenderMode = 0;
   // SD card font family name, including optional range suffix (empty = use built-in fontFamily)
   char sdFontFamilyName[64] = "";
+  // Optional UI CJK family; empty follows the saved reader SD-font family.
+  char sdUiFontFamilyName[64] = "";
+  const char* getEffectiveUiFontFamilyName() const {
+    return sdUiFontFamilyName[0] != '\0' ? sdUiFontFamilyName : sdFontFamilyName;
+  }
   // Global dictionary SD-card font (empty = use the reader font).
   char dictionarySdFontFamilyName[64] = "";
   // Zero follows the active reader size.
